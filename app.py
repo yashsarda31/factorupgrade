@@ -10,6 +10,15 @@ import google.generativeai as genai
 from typing import Dict, List, Tuple
 import json
 import time
+import warnings
+warnings.filterwarnings('ignore')
+
+# Check if matplotlib is available for styling
+try:
+    import matplotlib
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 # Page configuration
 st.set_page_config(
@@ -54,7 +63,7 @@ if 'stock_data_cache' not in st.session_state:
 class IndianStockAnalyzer:
     """Main class for Indian stock analysis"""
     
-    # Popular Indian stocks for quick access
+    # NIFTY 50 stocks
     NIFTY_50_STOCKS = [
         'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
         'HINDUNILVR.NS', 'ITC.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'KOTAKBANK.NS',
@@ -68,11 +77,108 @@ class IndianStockAnalyzer:
         'UPL.NS', 'TATACONSUM.NS', 'APOLLOHOSP.NS', 'ADANIPORTS.NS', 'BAJAJ-AUTO.NS'
     ]
     
+    # NIFTY NEXT 50 stocks
+    NIFTY_NEXT_50_STOCKS = [
+        'ADANIGREEN.NS', 'ADANITRANS.NS', 'AMBUJACEM.NS', 'ATGL.NS', 'AUROPHARMA.NS',
+        'BANDHANBNK.NS', 'BANKBARODA.NS', 'BERGEPAINT.NS', 'BIOCON.NS', 'BOSCHLTD.NS',
+        'CANBK.NS', 'CHOLAFIN.NS', 'COLPAL.NS', 'DLF.NS', 'DABUR.NS',
+        'DMART.NS', 'GAIL.NS', 'GODREJCP.NS', 'HAVELLS.NS', 'HDFCLIFE.NS',
+        'ICICIGI.NS', 'ICICIPRULI.NS', 'IGL.NS', 'INDIGO.NS', 'INDUSTOWER.NS',
+        'JINDALSTEL.NS', 'JUBLFOOD.NS', 'LTI.NS', 'LUPIN.NS', 'MARICO.NS',
+        'MCDOWELL-N.NS', 'MUTHOOTFIN.NS', 'NAUKRI.NS', 'PEL.NS', 'PIDILITIND.NS',
+        'PNB.NS', 'SBICARD.NS', 'SIEMENS.NS', 'TATAPOWER.NS', 'TORNTPHARM.NS',
+        'TRENT.NS', 'TVSMOTOR.NS', 'VEDL.NS', 'ZEEL.NS', 'GODREJPROP.NS',
+        'ICICIPRU.NS', 'INDIANB.NS', 'YESBANK.NS', 'ZOMATO.NS', 'PAYTM.NS'
+    ]
+    
+    # NIFTY MIDCAP 100 (Sample - first 50)
+    NIFTY_MIDCAP_100_STOCKS = [
+        'AARTIIND.NS', 'ABB.NS', 'ABBOTINDIA.NS', 'ABCAPITAL.NS', 'ABFRL.NS',
+        'ACC.NS', 'ADANIPOWER.NS', 'ALKEM.NS', 'APLLTD.NS', 'ASHOKLEY.NS',
+        'ASTRAL.NS', 'ATUL.NS', 'AUBANK.NS', 'BAJAJHLDNG.NS', 'BALKRISIND.NS',
+        'BALRAMCHIN.NS', 'BATAINDIA.NS', 'BEL.NS', 'BHARATFORG.NS', 'BHEL.NS',
+        'BIRLACORPN.NS', 'BLUEDART.NS', 'CAMS.NS', 'CANFINHOME.NS', 'CASTROLIND.NS',
+        'CDSL.NS', 'CENTRALBK.NS', 'CENTURYPLY.NS', 'CHAMBLFERT.NS', 'CHOLAHLDNG.NS',
+        'COFORGE.NS', 'CONCOR.NS', 'COROMANDEL.NS', 'CREDITACC.NS', 'CROMPTON.NS',
+        'CUB.NS', 'CUMMINSIND.NS', 'CYIENT.NS', 'DCBBANK.NS', 'DEEPAKNTR.NS',
+        'DELTACORP.NS', 'DHANI.NS', 'DIXON.NS', 'EMAMILTD.NS', 'ENDURANCE.NS',
+        'ESCORTS.NS', 'EXIDEIND.NS', 'FEDERALBNK.NS', 'FINEORG.NS', 'FLUOROCHEM.NS'
+    ]
+    
+    # Banking stocks
+    BANKING_STOCKS = [
+        'HDFCBANK.NS', 'ICICIBANK.NS', 'AXISBANK.NS', 'SBIN.NS', 'KOTAKBANK.NS',
+        'INDUSINDBK.NS', 'BANDHANBNK.NS', 'BANKBARODA.NS', 'PNB.NS', 'CANBK.NS',
+        'FEDERALBNK.NS', 'AUBANK.NS', 'IDFCFIRSTB.NS', 'RBLBANK.NS', 'YESBANK.NS',
+        'CENTRALBK.NS', 'INDIANB.NS', 'UNIONBANK.NS', 'MAHABANK.NS', 'IOB.NS'
+    ]
+    
+    # IT stocks
+    IT_STOCKS = [
+        'TCS.NS', 'INFY.NS', 'HCLTECH.NS', 'WIPRO.NS', 'TECHM.NS',
+        'LTI.NS', 'MINDTREE.NS', 'MPHASIS.NS', 'COFORGE.NS', 'PERSISTENT.NS',
+        'LTTS.NS', 'ROUTE.NS', 'CYIENT.NS', 'ECLERX.NS', 'LATENTVIEW.NS',
+        'BIRLASOFT.NS', 'ZENSARTECH.NS', 'HAPPSTMNDS.NS', 'SONATSOFTW.NS', 'MASTEK.NS'
+    ]
+    
+    # Pharma stocks
+    PHARMA_STOCKS = [
+        'SUNPHARMA.NS', 'DRREDDY.NS', 'DIVISLAB.NS', 'CIPLA.NS', 'AUROPHARMA.NS',
+        'LUPIN.NS', 'TORNTPHARM.NS', 'ALKEM.NS', 'BIOCON.NS', 'GLENMARK.NS',
+        'CADILAHC.NS', 'ABBOTINDIA.NS', 'SANOFI.NS', 'PFIZER.NS', 'GLAXO.NS',
+        'IPCALAB.NS', 'LAURUSLABS.NS', 'NATCOPHARM.NS', 'GRANULES.NS', 'AJANTPHARM.NS'
+    ]
+    
+    # Auto stocks
+    AUTO_STOCKS = [
+        'MARUTI.NS', 'TATAMOTORS.NS', 'M&M.NS', 'BAJAJ-AUTO.NS', 'EICHERMOT.NS',
+        'HEROMOTOCO.NS', 'TVSMOTOR.NS', 'ASHOKLEY.NS', 'BHARATFORG.NS', 'ESCORTS.NS',
+        'MOTHERSON.NS', 'BOSCHLTD.NS', 'MRF.NS', 'APOLLOTYRE.NS', 'CEAT.NS',
+        'JKTyre.NS', 'BALKRISIND.NS', 'ENDURANCE.NS', 'EXIDEIND.NS', 'AMARAJABAT.NS'
+    ]
+    
+    # FMCG stocks
+    FMCG_STOCKS = [
+        'HINDUNILVR.NS', 'ITC.NS', 'NESTLEIND.NS', 'BRITANNIA.NS', 'DABUR.NS',
+        'MARICO.NS', 'GODREJCP.NS', 'TATACONSUM.NS', 'COLPAL.NS', 'GILLETTE.NS',
+        'PGHH.NS', 'VBL.NS', 'RADICO.NS', 'EMAMILTD.NS', 'BAJAJCON.NS',
+        'JYOTHYLAB.NS', 'GODREJAGRO.NS', 'ZYDUSWELL.NS', 'HATSUN.NS', 'VENKEYS.NS'
+    ]
+    
     def __init__(self, api_key: str = None):
         self.api_key = api_key
         if api_key:
-            genai.configure(api_key="AIzaSyBV-Fel9vIl9rqlOU1K5L9xfs7q5xUZPKk")
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+            except Exception as e:
+                st.error(f"Error configuring Gemini API: {str(e)}")
+    
+    def get_stock_universe(self, universe_type: str) -> List[str]:
+        """Get stock list based on universe type"""
+        if universe_type == "NIFTY 50":
+            return self.NIFTY_50_STOCKS
+        elif universe_type == "NIFTY NEXT 50":
+            return self.NIFTY_NEXT_50_STOCKS
+        elif universe_type == "NIFTY 100":
+            return self.NIFTY_50_STOCKS + self.NIFTY_NEXT_50_STOCKS
+        elif universe_type == "NIFTY MIDCAP 100":
+            return self.NIFTY_MIDCAP_100_STOCKS
+        elif universe_type == "Banking":
+            return self.BANKING_STOCKS
+        elif universe_type == "IT":
+            return self.IT_STOCKS
+        elif universe_type == "Pharma":
+            return self.PHARMA_STOCKS
+        elif universe_type == "Auto":
+            return self.AUTO_STOCKS
+        elif universe_type == "FMCG":
+            return self.FMCG_STOCKS
+        elif universe_type == "All Sectors":
+            return list(set(self.BANKING_STOCKS + self.IT_STOCKS + self.PHARMA_STOCKS + 
+                          self.AUTO_STOCKS + self.FMCG_STOCKS))
+        else:
+            return self.NIFTY_50_STOCKS
     
     @st.cache_data(ttl=3600)
     def fetch_stock_data(_self, symbol: str, period: str = "1y") -> pd.DataFrame:
@@ -82,7 +188,6 @@ class IndianStockAnalyzer:
             data = stock.history(period=period)
             return data
         except Exception as e:
-            st.error(f"Error fetching data for {symbol}: {str(e)}")
             return pd.DataFrame()
     
     @st.cache_data(ttl=3600)
@@ -118,7 +223,6 @@ class IndianStockAnalyzer:
             
             return fundamentals
         except Exception as e:
-            st.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
             return {}
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -360,13 +464,17 @@ class StockScreener:
     
     @staticmethod
     def screen_stocks(stocks: List[str], analyzer: IndianStockAnalyzer, 
-                     screen_type: str, progress_bar=None) -> pd.DataFrame:
+                     screen_type: str, min_score: float = 0, 
+                     progress_bar=None, status_text=None) -> pd.DataFrame:
         """Screen stocks based on criteria"""
         results = []
+        failed_stocks = []
         
         for i, symbol in enumerate(stocks):
             if progress_bar:
                 progress_bar.progress((i + 1) / len(stocks))
+            if status_text:
+                status_text.text(f"Analyzing {symbol} ({i+1}/{len(stocks)})...")
             
             try:
                 # Fetch data
@@ -374,6 +482,7 @@ class StockScreener:
                 df = analyzer.fetch_stock_data(symbol, period="1y")
                 
                 if not fundamentals or df.empty:
+                    failed_stocks.append(symbol)
                     continue
                 
                 # Calculate indicators
@@ -385,6 +494,16 @@ class StockScreener:
                                            df.iloc[-1]['Close'] if not df.empty else None)
                 momentum = analyzer.momentum_score(df)
                 
+                # Apply minimum score filter
+                if screen_type == "Quality" and quality < min_score:
+                    continue
+                elif screen_type == "Value" and value < min_score:
+                    continue
+                elif screen_type == "Momentum" and momentum < min_score:
+                    continue
+                elif screen_type == "Overall" and ((quality + value + momentum) / 3) < min_score:
+                    continue
+                
                 # Current metrics
                 current_price = df.iloc[-1]['Close'] if not df.empty else 'N/A'
                 change_1d = ((df.iloc[-1]['Close'] - df.iloc[-2]['Close']) / 
@@ -392,24 +511,29 @@ class StockScreener:
                 
                 results.append({
                     'Symbol': symbol.replace('.NS', '').replace('.BO', ''),
-                    'Company': fundamentals.get('Company Name', symbol),
+                    'Company': fundamentals.get('Company Name', symbol)[:30],
                     'Sector': fundamentals.get('Sector', 'N/A'),
                     'Price': round(current_price, 2) if current_price != 'N/A' else 'N/A',
                     'Change %': round(change_1d, 2),
                     'PE Ratio': round(fundamentals.get('PE Ratio', 0), 2) if fundamentals.get('PE Ratio') != 'N/A' else 'N/A',
                     'PB Ratio': round(fundamentals.get('PB Ratio', 0), 2) if fundamentals.get('PB Ratio') != 'N/A' else 'N/A',
-                    'ROE': round(fundamentals.get('ROE', 0) * 100, 2) if fundamentals.get('ROE') != 'N/A' else 'N/A',
-                    'Quality Score': round(quality, 2),
-                    'Value Score': round(value, 2),
-                    'Momentum Score': round(momentum, 2),
-                    'Overall Score': round((quality + value + momentum) / 3, 2)
+                    'ROE %': round(fundamentals.get('ROE', 0) * 100, 2) if fundamentals.get('ROE') != 'N/A' else 'N/A',
+                    'D/E': round(fundamentals.get('Debt to Equity', 0), 2) if fundamentals.get('Debt to Equity') != 'N/A' else 'N/A',
+                    'Quality': round(quality, 1),
+                    'Value': round(value, 1),
+                    'Momentum': round(momentum, 1),
+                    'Overall': round((quality + value + momentum) / 3, 1)
                 })
                 
-                time.sleep(0.1)  # Rate limiting
+                # Rate limiting to avoid API throttling
+                time.sleep(0.05)
                 
             except Exception as e:
-                st.warning(f"Error processing {symbol}: {str(e)}")
+                failed_stocks.append(symbol)
                 continue
+        
+        if failed_stocks and status_text:
+            status_text.warning(f"Failed to analyze {len(failed_stocks)} stocks")
         
         df_results = pd.DataFrame(results)
         
@@ -418,15 +542,84 @@ class StockScreener:
         
         # Apply screening filters
         if screen_type == "Quality":
-            df_results = df_results.sort_values('Quality Score', ascending=False)
+            df_results = df_results.sort_values('Quality', ascending=False)
         elif screen_type == "Value":
-            df_results = df_results.sort_values('Value Score', ascending=False)
+            df_results = df_results.sort_values('Value', ascending=False)
         elif screen_type == "Momentum":
-            df_results = df_results.sort_values('Momentum Score', ascending=False)
+            df_results = df_results.sort_values('Momentum', ascending=False)
         elif screen_type == "Overall":
-            df_results = df_results.sort_values('Overall Score', ascending=False)
+            df_results = df_results.sort_values('Overall', ascending=False)
         
         return df_results
+
+def style_dataframe(df, columns_to_style):
+    """Apply custom styling to dataframe"""
+    def color_negative_red(val):
+        """Color negative values red and positive values green"""
+        try:
+            if isinstance(val, str):
+                return ''
+            color = 'red' if val < 0 else 'green' if val > 0 else 'black'
+            return f'color: {color}'
+        except:
+            return ''
+    
+    def background_gradient_custom(val, vmin, vmax):
+        """Custom background gradient"""
+        try:
+            if isinstance(val, str) or val == 'N/A':
+                return ''
+            # Normalize value between 0 and 1
+            norm_val = (val - vmin) / (vmax - vmin) if vmax != vmin else 0.5
+            # Create color from red to yellow to green
+            if norm_val < 0.5:
+                # Red to yellow
+                r = 255
+                g = int(255 * (norm_val * 2))
+                b = 0
+            else:
+                # Yellow to green
+                r = int(255 * (2 - norm_val * 2))
+                g = 255
+                b = 0
+            return f'background-color: rgba({r}, {g}, {b}, 0.3)'
+        except:
+            return ''
+    
+    styled_df = df.style
+    
+    # Apply color to change columns
+    if 'Change %' in df.columns:
+        styled_df = styled_df.applymap(color_negative_red, subset=['Change %'])
+    
+    # Apply gradient to score columns if matplotlib is available
+    if HAS_MATPLOTLIB:
+        try:
+            score_columns = [col for col in columns_to_style if col in df.columns]
+            if score_columns:
+                styled_df = styled_df.background_gradient(subset=score_columns, cmap='RdYlGn', vmin=0, vmax=100)
+        except:
+            # If background_gradient fails, use custom implementation
+            for col in columns_to_style:
+                if col in df.columns:
+                    vmin = 0
+                    vmax = 100
+                    styled_df = styled_df.applymap(
+                        lambda x: background_gradient_custom(x, vmin, vmax), 
+                        subset=[col]
+                    )
+    else:
+        # Use custom gradient implementation without matplotlib
+        for col in columns_to_style:
+            if col in df.columns:
+                vmin = 0
+                vmax = 100
+                styled_df = styled_df.applymap(
+                    lambda x: background_gradient_custom(x, vmin, vmax), 
+                    subset=[col]
+                )
+    
+    return styled_df
 
 def main():
     st.markdown('<h1 class="main-header">🏛️ Indian Equity Research Platform</h1>', 
@@ -675,66 +868,156 @@ def main():
     with tab2:
         st.header("Stock Screener")
         
-        col1, col2, col3 = st.columns([1, 1, 1])
+        # Screener configuration
+        col1, col2 = st.columns([3, 1])
         
         with col1:
-            screen_type = st.selectbox("Screening Strategy", 
-                                      ["Quality", "Value", "Momentum", "Overall"])
+            col1_1, col1_2, col1_3 = st.columns(3)
+            
+            with col1_1:
+                screen_type = st.selectbox("Screening Strategy", 
+                                          ["Quality", "Value", "Momentum", "Overall"])
+            
+            with col1_2:
+                stock_universe = st.selectbox("Stock Universe", 
+                                             ["NIFTY 50", "NIFTY NEXT 50", "NIFTY 100", 
+                                              "NIFTY MIDCAP 100", "Banking", "IT", 
+                                              "Pharma", "Auto", "FMCG", "All Sectors",
+                                              "Custom List"])
+            
+            with col1_3:
+                min_score = st.slider("Minimum Score Filter", 0, 100, 50, 10)
         
         with col2:
-            stock_universe = st.selectbox("Stock Universe", 
-                                         ["NIFTY 50", "Custom List"])
+            st.markdown("### Quick Stats")
+            if stock_universe != "Custom List":
+                stocks_count = len(analyzer.get_stock_universe(stock_universe))
+                st.info(f"📊 {stocks_count} stocks in {stock_universe}")
         
-        with col3:
-            if stock_universe == "Custom List":
-                custom_stocks = st.text_area("Enter symbols (comma-separated)", 
-                                            "RELIANCE,TCS,INFY,HDFCBANK")
+        # Custom stock input
+        if stock_universe == "Custom List":
+            custom_stocks = st.text_area("Enter symbols (comma-separated)", 
+                                        "RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK,WIPRO,BHARTIARTL,SBIN",
+                                        height=100)
         
-        if st.button("🔍 Run Screener", type="primary"):
+        # Advanced filters
+        with st.expander("Advanced Filters"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                max_results = st.number_input("Max Results", min_value=10, max_value=500, value=50)
+            with col2:
+                sort_by = st.selectbox("Sort By", ["Score", "PE Ratio", "PB Ratio", "ROE %"])
+            with col3:
+                ascending = st.checkbox("Ascending Order", value=False)
+        
+        if st.button("🔍 Run Screener", type="primary", use_container_width=True):
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             # Prepare stock list
-            if stock_universe == "NIFTY 50":
-                stocks = analyzer.NIFTY_50_STOCKS[:20]  # Limited for demo
-            else:
+            if stock_universe == "Custom List":
                 stocks = [f"{s.strip()}.NS" for s in custom_stocks.split(',')]
+            else:
+                stocks = analyzer.get_stock_universe(stock_universe)
             
             status_text.text(f"Screening {len(stocks)} stocks...")
             
             # Run screener
             screener = StockScreener()
-            results = screener.screen_stocks(stocks, analyzer, screen_type, progress_bar)
+            results = screener.screen_stocks(
+                stocks, analyzer, screen_type, min_score, 
+                progress_bar, status_text
+            )
             
             progress_bar.empty()
             status_text.empty()
             
             if not results.empty:
-                st.success(f"Found {len(results)} stocks matching criteria")
+                # Apply additional sorting if requested
+                if sort_by != "Score":
+                    sort_column = {
+                        "PE Ratio": "PE Ratio",
+                        "PB Ratio": "PB Ratio",
+                        "ROE %": "ROE %"
+                    }[sort_by]
+                    if sort_column in results.columns:
+                        results = results.sort_values(sort_column, ascending=ascending)
                 
-                # Display results
-                st.dataframe(
-                    results.style.background_gradient(subset=['Quality Score', 'Value Score', 
-                                                             'Momentum Score', 'Overall Score'],
-                                                     cmap='RdYlGn'),
-                    use_container_width=True,
-                    height=600
-                )
+                # Limit results
+                results = results.head(max_results)
+                
+                st.success(f"✅ Found {len(results)} stocks matching criteria (Score ≥ {min_score})")
+                
+                # Display summary statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    avg_quality = results['Quality'].mean()
+                    st.metric("Avg Quality Score", f"{avg_quality:.1f}")
+                with col2:
+                    avg_value = results['Value'].mean()
+                    st.metric("Avg Value Score", f"{avg_value:.1f}")
+                with col3:
+                    avg_momentum = results['Momentum'].mean()
+                    st.metric("Avg Momentum Score", f"{avg_momentum:.1f}")
+                with col4:
+                    avg_overall = results['Overall'].mean()
+                    st.metric("Avg Overall Score", f"{avg_overall:.1f}")
+                
+                # Display results with proper styling
+                st.subheader(f"📊 Screening Results - Top {len(results)} Stocks")
+                columns_to_style = ['Quality', 'Value', 'Momentum', 'Overall']
+                styled_df = style_dataframe(results, columns_to_style)
+                st.dataframe(styled_df, use_container_width=True, height=600)
                 
                 # Download results
                 csv = results.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Results",
-                    data=csv,
-                    file_name=f"screening_results_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv"
-                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="📥 Download Results (CSV)",
+                        data=csv,
+                        file_name=f"{stock_universe}_{screen_type}_screening_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+                with col2:
+                    # Generate summary report
+                    summary = f"Screening Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    summary += f"Universe: {stock_universe}\n"
+                    summary += f"Strategy: {screen_type}\n"
+                    summary += f"Minimum Score: {min_score}\n"
+                    summary += f"Stocks Analyzed: {len(stocks)}\n"
+                    summary += f"Stocks Qualified: {len(results)}\n\n"
+                    summary += "Top 10 Picks:\n"
+                    for idx, row in results.head(10).iterrows():
+                        summary += f"{idx+1}. {row['Symbol']} - {row['Company'][:30]} (Score: {row[screen_type]:.1f})\n"
+                    
+                    st.download_button(
+                        label="📥 Download Summary Report",
+                        data=summary,
+                        file_name=f"screening_summary_{datetime.now().strftime('%Y%m%d')}.txt",
+                        mime="text/plain"
+                    )
                 
-                # Top picks
-                st.subheader("🏆 Top 5 Picks")
-                st.dataframe(results.head(), use_container_width=True)
+                # Top picks visualization
+                st.subheader("🏆 Top 10 Picks")
+                top_10 = results.head(10)
+                
+                # Create a bar chart for top 10
+                fig = px.bar(top_10, x='Symbol', y=screen_type,
+                           color=screen_type,
+                           color_continuous_scale='RdYlGn',
+                           title=f'Top 10 Stocks by {screen_type} Score')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Sector distribution of results
+                if 'Sector' in results.columns:
+                    st.subheader("📊 Sector Distribution")
+                    sector_dist = results['Sector'].value_counts()
+                    fig_sector = px.pie(values=sector_dist.values, names=sector_dist.index,
+                                       title='Sector Distribution of Screened Stocks')
+                    st.plotly_chart(fig_sector, use_container_width=True)
             else:
-                st.warning("No results found. Try adjusting your criteria.")
+                st.warning(f"No stocks found matching criteria (Minimum Score: {min_score}). Try adjusting your filters.")
     
     with tab3:
         st.header("Portfolio Analysis")
@@ -744,7 +1027,7 @@ def main():
         # Portfolio input
         portfolio_text = st.text_area(
             "Enter your portfolio (Symbol, Quantity, Buy Price)",
-            "RELIANCE, 100, 2400\nTCS, 50, 3500\nINFY, 75, 1400"
+            "RELIANCE, 100, 2400\nTCS, 50, 3500\nINFY, 75, 1400\nHDFCBANK, 25, 1600\nICICIBANK, 100, 950"
         )
         
         if st.button("Analyze Portfolio"):
@@ -806,13 +1089,16 @@ def main():
                 st.subheader("Holdings")
                 df_portfolio = pd.DataFrame(results)
                 
-                st.dataframe(
-                    df_portfolio.style.applymap(
-                        lambda x: 'color: green' if x > 0 else 'color: red' if x < 0 else '',
-                        subset=['P&L', 'P&L %']
-                    ),
-                    use_container_width=True
+                # Apply custom styling
+                def style_pnl(val):
+                    color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+                    return f'color: {color}'
+                
+                styled_portfolio = df_portfolio.style.applymap(
+                    style_pnl, subset=['P&L', 'P&L %']
                 )
+                
+                st.dataframe(styled_portfolio, use_container_width=True)
                 
                 # Portfolio composition
                 st.subheader("Portfolio Composition")
@@ -827,7 +1113,7 @@ def main():
         
         report_stocks = st.text_area(
             "Enter stock symbols (comma-separated)",
-            "RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK"
+            "RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK,WIPRO,BHARTIARTL,SBIN,KOTAKBANK,AXISBANK"
         )
         
         if st.button("Generate Bulk Reports"):
@@ -854,9 +1140,12 @@ def main():
                                 symbol, fundamentals, quality, value, momentum)
                         else:
                             report = f"Basic Report for {symbol}\n"
-                            report += f"Quality: {quality:.2f}\n"
-                            report += f"Value: {value:.2f}\n"
-                            report += f"Momentum: {momentum:.2f}\n"
+                            report += f"Company: {fundamentals.get('Company Name', 'N/A')}\n"
+                            report += f"Sector: {fundamentals.get('Sector', 'N/A')}\n"
+                            report += f"Quality Score: {quality:.2f}\n"
+                            report += f"Value Score: {value:.2f}\n"
+                            report += f"Momentum Score: {momentum:.2f}\n"
+                            report += f"Overall Score: {(quality+value+momentum)/3:.2f}\n"
                         
                         reports[symbol] = report
             
@@ -945,19 +1234,6 @@ def main():
                         color_continuous_scale=['red', 'yellow', 'green'],
                         title='Sector Performance (Day)')
             st.plotly_chart(fig, use_container_width=True)
-        
-        # Top gainers and losers
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🚀 Top Gainers")
-            # This would need real-time data
-            st.info("Connect to live data feed for real-time gainers")
-        
-        with col2:
-            st.subheader("📉 Top Losers")
-            # This would need real-time data
-            st.info("Connect to live data feed for real-time losers")
 
 if __name__ == "__main__":
     main()
