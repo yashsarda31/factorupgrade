@@ -679,7 +679,7 @@ class IndianStockAnalyzer:
     def _configure_genai(self, api_key: str) -> None:
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash")
+            self.model = genai.GenerativeModel("gemini-2.5-flash")
             logger.info("Gemini API configured successfully")
         except Exception as exc:
             logger.error("Error configuring Gemini API: %s", exc)
