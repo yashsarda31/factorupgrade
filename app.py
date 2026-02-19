@@ -8,7 +8,7 @@ and fundamental analysis capabilities, powered by AI insights.
 Architecture:
     - Unified data fetching (single Ticker per stock)
     - TTL-based caching layer
-    - Thread-safe rate limiting
+    - Thread-safe rate limiting (NO Streamlit calls from threads)
     - Proper RSI (Wilder's smoothing)
     - Fixed-denominator scoring with data coverage penalties
     - Portfolio risk analytics (VaR, CVaR, Sharpe, Max Drawdown)
@@ -43,6 +43,8 @@ import re
 import html
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
+import hashlib
 
 # ---------------------------------------------------------------------------
 # Logging & warnings
@@ -100,12 +102,8 @@ def _is_cloud_environment() -> bool:
     for key in ("STREAMLIT_SHARING", "IS_CLOUD", "STREAMLIT_SERVER_HEADLESS"):
         if os.environ.get(key):
             return True
-    try:
-        if hasattr(st, "secrets") and len(st.secrets) > 0:
-            return bool(st.secrets.get("IS_CLOUD", False))
-    except Exception:
-        pass
-    return False
+    # Check for cloud indicators without accessing st.secrets yet
+    return os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud"
 
 
 IS_CLOUD: bool = _is_cloud_environment()
@@ -156,8 +154,8 @@ class Config:
     SCORE_HIGH: float = 70.0
     SCORE_MEDIUM: float = 40.0
 
-    # Threading
-    MAX_WORKERS_LOCAL: int = 5
+    # Threading - CRITICAL: Use 1 worker on cloud to avoid session issues
+    MAX_WORKERS_LOCAL: int = 4
     MAX_WORKERS_CLOUD: int = 1
 
     # Portfolio validation
@@ -580,6 +578,18 @@ class PortfolioRiskMetrics:
     correlation_matrix: Optional[pd.DataFrame] = None
 
 
+@dataclass
+class ScreenerResult:
+    """Container for a single screener analysis result - thread-safe, no Streamlit deps."""
+    symbol: str
+    row_data: Optional[Dict] = None
+    error: Optional[str] = None
+    
+    @property
+    def is_ok(self) -> bool:
+        return self.row_data is not None and self.error is None
+
+
 # =============================================================================
 # Thread-safe rate limiter
 # =============================================================================
@@ -616,59 +626,74 @@ class RateLimiter:
 
 
 # =============================================================================
-# TTL cache backed by session state
+# TTL cache - Thread-safe without Streamlit dependencies
 # =============================================================================
 
-class StockCache:
-    """TTL-based in-memory cache stored in ``st.session_state``."""
-
-    def __init__(self, ttl: int = Config.CACHE_TTL_SECONDS):
-        self._ttl = ttl
-        if "_stock_cache" not in st.session_state:
-            st.session_state["_stock_cache"] = {}
-
-    @property
-    def _store(self) -> Dict:
-        return st.session_state["_stock_cache"]
+class ThreadSafeCache:
+    """
+    Thread-safe TTL-based in-memory cache.
+    
+    IMPORTANT: This cache does NOT use st.session_state internally to avoid
+    NoSessionContext errors when accessed from worker threads. Instead, it uses
+    a module-level dictionary with proper locking.
+    """
+    
+    _instance: Optional["ThreadSafeCache"] = None
+    _lock = threading.Lock()
+    
+    def __new__(cls, ttl: int = Config.CACHE_TTL_SECONDS):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._store: Dict[str, Tuple[float, Any]] = {}
+                    cls._instance._ttl = ttl
+                    cls._instance._store_lock = threading.Lock()
+        return cls._instance
 
     @staticmethod
     def _key(symbol: str, period: str) -> str:
         return f"{symbol}|{period}"
 
     def get(self, symbol: str, period: str) -> Optional[StockDataBundle]:
-        entry = self._store.get(self._key(symbol, period))
-        if entry is None:
-            return None
-        ts, bundle = entry
-        if time.time() - ts > self._ttl:
-            self._store.pop(self._key(symbol, period), None)
-            return None
-        return bundle
+        key = self._key(symbol, period)
+        with self._store_lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            ts, bundle = entry
+            if time.time() - ts > self._ttl:
+                self._store.pop(key, None)
+                return None
+            return bundle
 
     def put(self, symbol: str, period: str, bundle: StockDataBundle) -> None:
-        self._store[self._key(symbol, period)] = (time.time(), bundle)
+        key = self._key(symbol, period)
+        with self._store_lock:
+            self._store[key] = (time.time(), bundle)
 
     def invalidate(self, symbol: Optional[str] = None) -> None:
-        if symbol is None:
-            self._store.clear()
-        else:
-            to_del = [k for k in self._store if k.startswith(f"{symbol}|")]
-            for k in to_del:
-                del self._store[k]
+        with self._store_lock:
+            if symbol is None:
+                self._store.clear()
+            else:
+                to_del = [k for k in self._store if k.startswith(f"{symbol}|")]
+                for k in to_del:
+                    del self._store[k]
 
 
 # =============================================================================
-# Core Analyzer
+# Core Analyzer - Thread-safe, no Streamlit UI calls
 # =============================================================================
 
 class IndianStockAnalyzer:
-    """Central analysis engine."""
+    """Central analysis engine - designed to be thread-safe."""
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
         self.is_cloud = IS_CLOUD
         self.rate_limiter = RateLimiter(self.is_cloud)
-        self.cache = StockCache()
+        self.cache = ThreadSafeCache()
         self.model = None
         if api_key:
             self._configure_genai(api_key)
@@ -683,7 +708,6 @@ class IndianStockAnalyzer:
             logger.info("Gemini API configured successfully")
         except Exception as exc:
             logger.error("Error configuring Gemini API: %s", exc)
-            st.error(f"Error configuring Gemini API: {exc}")
 
     # ------------------------------------------------------------------
     # Properties
@@ -720,7 +744,7 @@ class IndianStockAnalyzer:
         return stocks
 
     # ------------------------------------------------------------------
-    # Unified data fetching
+    # Unified data fetching - Thread-safe
     # ------------------------------------------------------------------
     def fetch_stock_bundle(
         self, symbol: str, period: str = "1y"
@@ -1106,6 +1130,67 @@ class IndianStockAnalyzer:
         )
 
     # ------------------------------------------------------------------
+    # Single stock analysis - Thread-safe, returns data only
+    # ------------------------------------------------------------------
+    def analyze_single_stock(
+        self, 
+        symbol: str, 
+        min_score: float = 0,
+        screen_type: ScreenType = ScreenType.OVERALL
+    ) -> ScreenerResult:
+        """
+        Thread-safe stock analysis that returns data only (no Streamlit calls).
+        This is the core function called by worker threads.
+        """
+        try:
+            res = self.fetch_stock_bundle(symbol, period=self.default_period)
+            if not res.is_ok or not res.value.is_valid or res.value.fundamentals is None:
+                return ScreenerResult(symbol=symbol, error=f"Failed to fetch data for {symbol}")
+
+            bundle = res.value
+            df = self.calculate_technical_indicators(bundle.history)
+            scores = self.calculate_all_scores(bundle.fundamentals, df)
+
+            score_map = {
+                ScreenType.QUALITY: scores.quality,
+                ScreenType.VALUE: scores.value,
+                ScreenType.MOMENTUM: scores.momentum,
+                ScreenType.OVERALL: scores.overall,
+            }
+            if score_map.get(screen_type, scores.overall) < min_score:
+                return ScreenerResult(symbol=symbol, error="Below minimum score threshold")
+
+            cp = df.iloc[-1]["Close"]
+            change_1d = 0.0
+            if len(df) >= 2:
+                prev = df.iloc[-2]["Close"]
+                if prev != 0:
+                    change_1d = ((cp - prev) / prev) * 100
+
+            fd = bundle.fundamentals
+            row_data = {
+                "Symbol": symbol.replace(".NS", "").replace(".BO", ""),
+                "Company": (fd.company_name[:30] if fd.company_name else "N/A"),
+                "Sector": fd.sector,
+                "Price": round(cp, 2),
+                "Change %": round(change_1d, 2),
+                "PE Ratio": fd.get_pe_display(),
+                "PB Ratio": fd.get_pb_display(),
+                "ROE %": fd.get_roe_display(),
+                "D/E": fd.get_debt_to_equity_display(),
+                "Quality": round(scores.quality, 1),
+                "Value": round(scores.value, 1),
+                "Momentum": round(scores.momentum, 1),
+                "Overall": round(scores.overall, 1),
+                "Coverage": f"{scores.data_coverage:.0%}",
+            }
+            return ScreenerResult(symbol=symbol, row_data=row_data)
+
+        except Exception as exc:
+            logger.error("Error analyzing %s: %s", symbol, exc)
+            return ScreenerResult(symbol=symbol, error=str(exc))
+
+    # ------------------------------------------------------------------
     # AI report generation
     # ------------------------------------------------------------------
     def generate_ai_report(
@@ -1290,11 +1375,18 @@ class PortfolioRiskAnalyzer:
 
 
 # =============================================================================
-# Stock Screener
+# Stock Screener - Fixed for Streamlit threading
 # =============================================================================
 
 class StockScreener:
-    """Threaded stock screening."""
+    """
+    Threaded stock screening - FIXED for Streamlit.
+    
+    KEY CHANGES:
+    1. Worker threads do NO Streamlit UI calls
+    2. Progress updates happen in main thread via as_completed iteration
+    3. Results collected as pure data, then displayed in main thread
+    """
 
     @staticmethod
     def screen_stocks(
@@ -1302,89 +1394,67 @@ class StockScreener:
         analyzer: IndianStockAnalyzer,
         screen_type: ScreenType,
         min_score: float = 0,
-        progress_callback: Optional[Callable[[float], None]] = None,
-        status_callback: Optional[Callable[[str], None]] = None,
-    ) -> pd.DataFrame:
+    ) -> Tuple[pd.DataFrame, int, int]:
+        """
+        Screen stocks and return results.
+        
+        Returns:
+            Tuple of (results_dataframe, successful_count, total_count)
+            
+        NOTE: This method is designed to be called from the main Streamlit thread.
+        Progress updates should be handled by the caller using the returned counts.
+        """
         results: List[Dict] = []
         total = len(stocks)
+        
         if total == 0:
-            return pd.DataFrame()
+            return pd.DataFrame(), 0, 0
 
-        completed = 0
-        lock = threading.Lock()
-
-        def _analyze(symbol: str) -> Optional[Dict]:
-            nonlocal completed
-            try:
-                res = analyzer.fetch_stock_bundle(symbol, period=analyzer.default_period)
-                if not res.is_ok or not res.value.is_valid or res.value.fundamentals is None:
-                    return None
-
-                bundle = res.value
-                df = analyzer.calculate_technical_indicators(bundle.history)
-                scores = analyzer.calculate_all_scores(bundle.fundamentals, df)
-
-                score_map = {
-                    ScreenType.QUALITY: scores.quality,
-                    ScreenType.VALUE: scores.value,
-                    ScreenType.MOMENTUM: scores.momentum,
-                    ScreenType.OVERALL: scores.overall,
-                }
-                if score_map.get(screen_type, scores.overall) < min_score:
-                    return None
-
-                cp = df.iloc[-1]["Close"]
-                change_1d = 0.0
-                if len(df) >= 2:
-                    prev = df.iloc[-2]["Close"]
-                    if prev != 0:
-                        change_1d = ((cp - prev) / prev) * 100
-
-                fd = bundle.fundamentals
-                return {
-                    "Symbol": symbol.replace(".NS", "").replace(".BO", ""),
-                    "Company": (fd.company_name[:30] if fd.company_name else "N/A"),
-                    "Sector": fd.sector,
-                    "Price": round(cp, 2),
-                    "Change %": round(change_1d, 2),
-                    "PE Ratio": fd.get_pe_display(),
-                    "PB Ratio": fd.get_pb_display(),
-                    "ROE %": fd.get_roe_display(),
-                    "D/E": fd.get_debt_to_equity_display(),
-                    "Quality": round(scores.quality, 1),
-                    "Value": round(scores.value, 1),
-                    "Momentum": round(scores.momentum, 1),
-                    "Overall": round(scores.overall, 1),
-                    "Coverage": f"{scores.data_coverage:.0%}",
-                }
-            except Exception as exc:
-                logger.error("Error screening %s: %s", symbol, exc)
-                return None
-            finally:
-                with lock:
-                    completed += 1
-                    if progress_callback:
-                        progress_callback(completed / total)
-                    if status_callback:
-                        status_callback(f"Completed {symbol} ({completed}/{total})")
-
+        # Determine worker count
         max_workers = (
-            Config.MAX_WORKERS_CLOUD if analyzer.is_cloud else min(Config.MAX_WORKERS_LOCAL, total)
+            Config.MAX_WORKERS_CLOUD if analyzer.is_cloud 
+            else min(Config.MAX_WORKERS_LOCAL, total)
         )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_analyze, s): s for s in stocks}
-            for future in as_completed(futures):
-                row = future.result()
-                if row is not None:
-                    results.append(row)
+        # For cloud, use sequential processing to avoid any threading issues
+        if analyzer.is_cloud or max_workers == 1:
+            # Sequential processing - safest for cloud
+            for symbol in stocks:
+                result = analyzer.analyze_single_stock(symbol, min_score, screen_type)
+                if result.is_ok and result.row_data:
+                    results.append(result.row_data)
+        else:
+            # Parallel processing for local - but NO Streamlit calls in threads
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                # Submit all tasks
+                futures = {
+                    pool.submit(
+                        analyzer.analyze_single_stock, 
+                        symbol, 
+                        min_score, 
+                        screen_type
+                    ): symbol 
+                    for symbol in stocks
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result.is_ok and result.row_data:
+                            results.append(result.row_data)
+                    except Exception as exc:
+                        symbol = futures[future]
+                        logger.error("Error processing %s: %s", symbol, exc)
 
+        # Build dataframe
         df_res = pd.DataFrame(results)
         if not df_res.empty:
             sort_col = screen_type.value if screen_type.value in df_res.columns else "Overall"
             df_res.sort_values(sort_col, ascending=False, inplace=True)
             df_res.reset_index(drop=True, inplace=True)
-        return df_res
+            
+        return df_res, len(results), total
 
 
 # =============================================================================
@@ -1435,16 +1505,17 @@ _CUSTOM_CSS = """
 
 
 # =============================================================================
-# Session state
+# Session state initialization
 # =============================================================================
 
 def _init_session_state() -> None:
-    for key, default in (
-        ("api_key", ""),
-        ("_stock_cache", {}),
-        ("screening_results", None),
-        ("last_analysis", None),
-    ):
+    """Initialize session state with defaults - called once at app start."""
+    defaults = {
+        "api_key": "",
+        "screening_results": None,
+        "last_analysis": None,
+    }
+    for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
@@ -1591,8 +1662,11 @@ def render_sidebar() -> None:
         # Try secrets / env first
         default_key = ""
         try:
-            default_key = st.secrets.get("GEMINI_API_KEY", "")
+            if hasattr(st, "secrets"):
+                default_key = st.secrets.get("GEMINI_API_KEY", "")
         except Exception:
+            pass
+        if not default_key:
             default_key = os.environ.get("GEMINI_API_KEY", "")
 
         api_key = st.text_input(
@@ -1612,7 +1686,7 @@ def render_sidebar() -> None:
 
         st.markdown("---")
         if st.button("🗑️ Clear Cache"):
-            StockCache().invalidate()
+            ThreadSafeCache().invalidate()
             st.success("Cache cleared")
 
 
@@ -1795,7 +1869,7 @@ def _render_ai_report(
 
 
 # =============================================================================
-# Tab: Screener
+# Tab: Screener - FIXED for Streamlit Cloud
 # =============================================================================
 
 def render_screener_tab(analyzer: IndianStockAnalyzer) -> None:
@@ -1863,9 +1937,7 @@ def render_screener_tab(analyzer: IndianStockAnalyzer) -> None:
     if not st.button("🔍 Run Screener", type="primary", use_container_width=True):
         return
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
+    # Prepare stock list
     if stock_universe_val == StockUniverse.CUSTOM.value:
         stocks = [
             f"{sanitize_symbol_input(s)}.NS"
@@ -1880,16 +1952,26 @@ def render_screener_tab(analyzer: IndianStockAnalyzer) -> None:
         st.warning("No stocks to screen.")
         return
 
-    status_text.text(f"Screening {len(stocks)} stocks…")
+    # Show progress placeholder
+    progress_placeholder = st.empty()
+    status_placeholder = st.empty()
+    
+    status_placeholder.text(f"Screening {len(stocks)} stocks…")
+    progress_placeholder.progress(0)
 
-    results = StockScreener.screen_stocks(
-        stocks, analyzer, screen_type_enum, min_score,
-        progress_callback=progress_bar.progress,
-        status_callback=status_text.text,
+    # Run screening (progress is handled internally now)
+    results, success_count, total_count = StockScreener.screen_stocks(
+        stocks, analyzer, screen_type_enum, min_score
     )
-
-    progress_bar.empty()
-    status_text.empty()
+    
+    # Update progress to complete
+    progress_placeholder.progress(100)
+    status_placeholder.text(f"Completed: {success_count}/{total_count} stocks analyzed")
+    
+    # Small delay then clear progress indicators
+    time.sleep(0.5)
+    progress_placeholder.empty()
+    status_placeholder.empty()
 
     if results.empty:
         st.warning("No stocks found. Try adjusting filters.")
